@@ -3,7 +3,12 @@ from datetime import datetime
 from decimal import Decimal
 
 from app.database.connection import Database
-from app.models.order import Order, OrderItem, OrderStatus
+from app.models.order import (
+    Order,
+    OrderItem,
+    OrderStatus,
+    OrderStatusHistory,
+)
 from app.schemas.order import OrderItemInput
 
 
@@ -55,12 +60,102 @@ class OrderRepository:
 
     def update_status(self, order_id: int, status: OrderStatus) -> Order | None:
         with self._database.transaction() as connection:
-            connection.execute(
-                "UPDATE orders SET status = ? WHERE id = ?",
-                (status.value, order_id),
+            current_row = self._get_row(connection, order_id)
+            if current_row is None:
+                return None
+
+            self._write_status(
+                connection, order_id, status, current_row["status"]
             )
             row = self._get_row(connection, order_id)
             return self._to_order(connection, row) if row is not None else None
+
+    def update_statuses(
+        self,
+        order_ids: list[int],
+        status: OrderStatus,
+        expected_statuses: dict[int, OrderStatus],
+    ) -> list[Order] | None:
+        with self._database.transaction() as connection:
+            rows = {
+                order_id: self._get_row(connection, order_id)
+                for order_id in order_ids
+            }
+            if any(
+                row is None
+                or OrderStatus(row["status"]) != expected_statuses[order_id]
+                for order_id, row in rows.items()
+            ):
+                return None
+
+            for order_id in order_ids:
+                row = rows[order_id]
+                if row is None:
+                    raise RuntimeError(
+                        "Order disappeared during bulk status update"
+                    )
+                self._write_status(connection, order_id, status, row["status"])
+
+            updated_orders = []
+            for order_id in order_ids:
+                row = self._get_row(connection, order_id)
+                if row is None:
+                    raise RuntimeError(
+                        "Order disappeared during bulk status update"
+                    )
+                updated_orders.append(self._to_order(connection, row))
+            return updated_orders
+
+    @staticmethod
+    def _write_status(
+        connection: sqlite3.Connection,
+        order_id: int,
+        status: OrderStatus,
+        previous_status: str,
+    ) -> None:
+        connection.execute(
+            "UPDATE orders SET status = ? WHERE id = ?",
+            (status.value, order_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO order_status_history (
+                order_id,
+                previous_status,
+                new_status
+            )
+            VALUES (?, ?, ?)
+            """,
+            (order_id, previous_status, status.value),
+        )
+
+    def get_status_history(
+        self, order_id: int
+    ) -> list[OrderStatusHistory]:
+        with self._database.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM order_status_history
+                WHERE order_id = ?
+                ORDER BY id
+                """,
+                (order_id,),
+            ).fetchall()
+
+            return [
+                OrderStatusHistory(
+                    id=row["id"],
+                    order_id=row["order_id"],
+                    previous_status=(
+                        OrderStatus(row["previous_status"])
+                        if row["previous_status"] is not None
+                        else None
+                    ),
+                    new_status=OrderStatus(row["new_status"]),
+                    changed_at=datetime.fromisoformat(row["changed_at"]),
+                )
+                for row in rows
+            ]
 
     @staticmethod
     def _get_row(
@@ -91,7 +186,6 @@ class OrderRepository:
             total=Decimal(row["total"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )
-
 
 def cancel_order(self, order_id: int) -> Order | None:
     with self._database.transaction() as connection:
