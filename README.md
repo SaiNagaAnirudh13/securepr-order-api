@@ -47,6 +47,7 @@ Use Python 3.10 or newer. From this directory:
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
 Settings are read from environment variables: `DATABASE_PATH`,
@@ -88,3 +89,5 @@ configuration, and CI. Suggested PR changes at three risk levels are in
 [docs/SECUREPR_TEST_SCENARIOS.md](docs/SECUREPR_TEST_SCENARIOS.md). High-risk
 examples are described as hypothetical review scenarios only; no deliberately
 vulnerable code or real secrets are included.
+
+test023
