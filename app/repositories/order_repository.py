@@ -91,3 +91,22 @@ class OrderRepository:
             total=Decimal(row["total"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )
+
+
+def cancel_order(self, order_id: int) -> Order | None:
+    with self._database.transaction() as connection:
+        connection.execute(
+            """
+            UPDATE orders
+            SET status = ?
+            WHERE id = ? AND status IN (?, ?)
+            """,
+            (
+                OrderStatus.CANCELLED.value,
+                order_id,
+                OrderStatus.PENDING.value,
+                OrderStatus.CONFIRMED.value,
+            ),
+        )
+        row = self._get_row(connection, order_id)
+        return self._to_order(connection, row) if row is not None else None

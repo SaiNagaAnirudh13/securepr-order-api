@@ -10,6 +10,7 @@ class OrderStatus(str, Enum):
     SHIPPED = "shipped"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+    REFUNDED = "refunded"
 
 
 @dataclass(frozen=True)
