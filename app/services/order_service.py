@@ -12,14 +12,6 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_TRANSITIONS = {
     OrderStatus.PENDING: {OrderStatus.PAID, OrderStatus.CANCELLED},
-    OrderStatus.PAID: {OrderStatus.SHIPPED, OrderStatus.CANCELLED},
-    OrderStatus.SHIPPED: {OrderStatus.COMPLETED},
-    OrderStatus.COMPLETED: set(),
-    OrderStatus.CANCELLED: set(),
-}
-
-_ALLOWED_TRANSITIONS = {
-    OrderStatus.PENDING: {OrderStatus.PAID, OrderStatus.CANCELLED},
     OrderStatus.PAID: {
         OrderStatus.SHIPPED,
         OrderStatus.CANCELLED,
@@ -71,10 +63,7 @@ class OrderService:
         if actor.role != UserRole.ADMIN and new_status != OrderStatus.CANCELLED:
             raise AuthorizationError(
                 "Customers may only cancel their own orders")
-        if new_status not in _ALLOWED_TRANSITIONS[order.status]:
-            raise ConflictError(
-                f"Order cannot move from {order.status.value} to {new_status.value}"
-            )
+        self._validate_status_transition(order, new_status)
         updated = self._repository.update_status(order_id, new_status)
         if updated is None:
             raise NotFoundError("Order not found")
@@ -83,3 +72,47 @@ class OrderService:
             extra={"order_id": order_id, "status": new_status.value},
         )
         return updated
+
+    def bulk_update_statuses(
+        self, order_ids: list[int], new_status: OrderStatus, actor: User
+    ) -> list[Order]:
+        if actor.role != UserRole.ADMIN:
+            raise AuthorizationError("Administrator access is required")
+        if len(order_ids) != len(set(order_ids)):
+            raise ConflictError("Duplicate order IDs are not allowed")
+
+        orders: list[Order] = []
+        for order_id in order_ids:
+            order = self._repository.get_by_id(order_id)
+            if order is None:
+                raise NotFoundError("Order not found")
+            self._validate_status_transition(order, new_status)
+            orders.append(order)
+
+        updated = self._repository.update_statuses(
+            order_ids,
+            new_status,
+            {order.id: order.status for order in orders},
+        )
+        if updated is None:
+            raise ConflictError(
+                "Order status changed during bulk update; please retry"
+            )
+        logger.info(
+            "Order statuses bulk updated",
+            extra={
+                "order_ids": order_ids,
+                "status": new_status.value,
+                "count": len(updated),
+            },
+        )
+        return updated
+
+    @staticmethod
+    def _validate_status_transition(
+        order: Order, new_status: OrderStatus
+    ) -> None:
+        if new_status not in _ALLOWED_TRANSITIONS[order.status]:
+            raise ConflictError(
+                f"Order cannot move from {order.status.value} to {new_status.value}"
+            )
