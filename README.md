@@ -5,7 +5,7 @@ orders. This fictional service is a standalone test repository for SecurePR
 integration testing. It contains no production credentials or real customer
 data and is not intended to be deployed as a production service.
 
-## Architecture
+## Architectures
 
 The API routers validate HTTP requests with Pydantic schemas and call services
 for business rules. Services use repositories to access SQLite through a small
