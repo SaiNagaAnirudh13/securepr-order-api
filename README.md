@@ -11,7 +11,7 @@ The API routers validate HTTP requests with Pydantic schemas and call services
 for business rules. Services use repositories to access SQLite through a small
 database abstraction. Passwords are stored as salted PBKDF2 hashes; login
 creates short-lived, in-memory bearer sessions. Roles are assigned on the
-server, so public registration cannot create an administrator.
+server, so public registration cannot create an administrator.ssd
 
 ```text
 HTTP request

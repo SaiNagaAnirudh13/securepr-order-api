@@ -18,6 +18,19 @@ _ALLOWED_TRANSITIONS = {
     OrderStatus.CANCELLED: set(),
 }
 
+_ALLOWED_TRANSITIONS = {
+    OrderStatus.PENDING: {OrderStatus.PAID, OrderStatus.CANCELLED},
+    OrderStatus.PAID: {
+        OrderStatus.SHIPPED,
+        OrderStatus.CANCELLED,
+        OrderStatus.REFUNDED,
+    },
+    OrderStatus.SHIPPED: {OrderStatus.COMPLETED},
+    OrderStatus.COMPLETED: {OrderStatus.REFUNDED},
+    OrderStatus.CANCELLED: set(),
+    OrderStatus.REFUNDED: set(),
+}
+
 
 class OrderService:
     def __init__(self, repository: OrderRepository) -> None:
@@ -36,7 +49,8 @@ class OrderService:
         if order is None:
             raise NotFoundError("Order not found")
         if actor.role != UserRole.ADMIN and order.user_id != actor.id:
-            raise AuthorizationError("You cannot access another account's order")
+            raise AuthorizationError(
+                "You cannot access another account's order")
         return order
 
     def list_for_user(self, user_id: int) -> list[Order]:
@@ -52,9 +66,11 @@ class OrderService:
         if order is None:
             raise NotFoundError("Order not found")
         if actor.role != UserRole.ADMIN and order.user_id != actor.id:
-            raise AuthorizationError("You cannot change another account's order")
+            raise AuthorizationError(
+                "You cannot change another account's order")
         if actor.role != UserRole.ADMIN and new_status != OrderStatus.CANCELLED:
-            raise AuthorizationError("Customers may only cancel their own orders")
+            raise AuthorizationError(
+                "Customers may only cancel their own orders")
         if new_status not in _ALLOWED_TRANSITIONS[order.status]:
             raise ConflictError(
                 f"Order cannot move from {order.status.value} to {new_status.value}"
