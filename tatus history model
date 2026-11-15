@@ -1,0 +1,311 @@
+[1mdiff --git a/app/api/admin.py b/app/api/admin.py[m
+[1mindex 11f34c1..33f1daa 100644[m
+[1m--- a/app/api/admin.py[m
+[1m+++ b/app/api/admin.py[m
+[36m@@ -4,7 +4,7 @@[m [mfrom fastapi import APIRouter, Depends[m
+ [m
+ from app.api.dependencies import AppContext, get_context, require_admin[m
+ from app.models.user import User[m
+[31m-from app.schemas.order import OrderResponse[m
+[32m+[m[32mfrom app.schemas.order import OrderBulkStatusUpdate, OrderResponse[m
+ from app.schemas.user import UserResponse[m
+ [m
+ router = APIRouter(prefix="/admin", tags=["administration"])[m
+[36m@@ -29,3 +29,15 @@[m [mdef list_all_orders([m
+         OrderResponse.from_model(order)[m
+         for order in context.orders.list_all()[m
+     ][m
+[32m+[m
+[32m+[m
+[32m+[m[32m@router.patch("/orders/status", response_model=list[OrderResponse])[m
+[32m+[m[32mdef bulk_update_order_status([m
+[32m+[m[32m    payload: OrderBulkStatusUpdate,[m
+[32m+[m[32m    user: Annotated[User, Depends(require_admin)],[m
+[32m+[m[32m    context: Annotated[AppContext, Depends(get_context)],[m
+[32m+[m[32m) -> list[OrderResponse]:[m
+[32m+[m[32m    orders = context.orders.bulk_update_statuses([m
+[32m+[m[32m        payload.order_ids, payload.status, user[m
+[32m+[m[32m    )[m
+[32m+[m[32m    return [OrderResponse.from_model(order) for order in orders][m
+[1mdiff --git a/app/models/order.py b/app/models/order.py[m
+[1mindex 3b8e1e3..626c0bd 100644[m
+[1m--- a/app/models/order.py[m
+[1m+++ b/app/models/order.py[m
+[36m@@ -28,3 +28,12 @@[m [mclass Order:[m
+     items: tuple[OrderItem, ...][m
+     total: Decimal[m
+     created_at: datetime[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@dataclass(frozen=True)[m
+[32m+[m[32mclass OrderStatusHistory:[m
+[32m+[m[32m    id: int[m
+[32m+[m[32m    order_id: int[m
+[32m+[m[32m    previous_status: OrderStatus | None[m
+[32m+[m[32m    new_status: OrderStatus[m
+[32m+[m[32m    changed_at: datetime[m
+[1mdiff --git a/app/schemas/order.py b/app/schemas/order.py[m
+[1mindex 2aef288..20662cc 100644[m
+[1m--- a/app/schemas/order.py[m
+[1m+++ b/app/schemas/order.py[m
+[36m@@ -1,7 +1,7 @@[m
+ from datetime import datetime[m
+ from decimal import Decimal[m
+ [m
+[31m-from pydantic import BaseModel, ConfigDict, Field[m
+[32m+[m[32mfrom pydantic import BaseModel, ConfigDict, Field, field_validator[m
+ [m
+ from app.models.order import Order, OrderItem, OrderStatus[m
+ [m
+[36m@@ -20,6 +20,18 @@[m [mclass OrderStatusUpdate(BaseModel):[m
+     status: OrderStatus[m
+ [m
+ [m
+[32m+[m[32mclass OrderBulkStatusUpdate(BaseModel):[m
+[32m+[m[32m    order_ids: list[int] = Field(min_length=1, max_length=50)[m
+[32m+[m[32m    status: OrderStatus[m
+[32m+[m
+[32m+[m[32m    @field_validator("order_ids")[m
+[32m+[m[32m    @classmethod[m
+[32m+[m[32m    def order_ids_must_be_unique(cls, order_ids: list[int]) -> list[int]:[m
+[32m+[m[32m        if len(order_ids) != len(set(order_ids)):[m
+[32m+[m[32m            raise ValueError("order_ids must not contain duplicates")[m
+[32m+[m[32m        return order_ids[m
+[32m+[m
+[32m+[m
+ class OrderItemResponse(BaseModel):[m
+     sku: str[m
+     quantity: int[m
+[1mdiff --git a/app/services/order_service.py b/app/services/order_service.py[m
+[1mindex 0fb16ec..6a890fa 100644[m
+[1m--- a/app/services/order_service.py[m
+[1m+++ b/app/services/order_service.py[m
+[36m@@ -71,10 +71,7 @@[m [mclass OrderService:[m
+         if actor.role != UserRole.ADMIN and new_status != OrderStatus.CANCELLED:[m
+             raise AuthorizationError([m
+                 "Customers may only cancel their own orders")[m
+[31m-        if new_status not in _ALLOWED_TRANSITIONS[order.status]:[m
+[31m-            raise ConflictError([m
+[31m-                f"Order cannot move from {order.status.value} to {new_status.value}"[m
+[31m-            )[m
+[32m+[m[32m        self._validate_status_transition(order, new_status)[m
+         updated = self._repository.update_status(order_id, new_status)[m
+         if updated is None:[m
+             raise NotFoundError("Order not found")[m
+[36m@@ -83,3 +80,53 @@[m [mclass OrderService:[m
+             extra={"order_id": order_id, "status": new_status.value},[m
+         )[m
+         return updated[m
+[32m+[m
+[32m+[m[32m    def bulk_update_statuses([m
+[32m+[m[32m        self, order_ids: list[int], new_status: OrderStatus, actor: User[m
+[32m+[m[32m    ) -> list[Order]:[m
+[32m+[m[32m        if actor.role != UserRole.ADMIN:[m
+[32m+[m[32m            raise AuthorizationError("Administrator access is required")[m
+[32m+[m
+[32m+[m[32m        orders: list[Order] = [][m
+[32m+[m[32m        for order_id in order_ids:[m
+[32m+[m[32m            order = self._repository.get_by_id(order_id)[m
+[32m+[m[32m            if order is None:[m
+[32m+[m[32m                raise NotFoundError("Order not found")[m
+[32m+[m[32m            self._validate_status_transition(order, new_status)[m
+[32m+[m[32m            orders.append(order)[m
+[32m+[m
+[32m+[m[32m        updated = self._repository.update_statuses([m
+[32m+[m[32m            order_ids,[m
+[32m+[m[32m            new_status,[m
+[32m+[m[32m            {order.id: order.status for order in orders},[m
+[32m+[m[32m        )[m
+[32m+[m[32m        if updated is None:[m
+[32m+[m[32m            raise ConflictError([m
+[32m+[m[32m                "Order status changed during bulk update; please retry"[m
+[32m+[m[32m            )[m
+[32m+[m[32m        logger.info([m
+[32m+[m[32m            "Order statuses bulk updated",[m
+[32m+[m[32m            extra={[m
+[32m+[m[32m                "order_ids": order_ids,[m
+[32m+[m[32m                "status": new_status.value,[m
+[32m+[m[32m                "count": len(updated),[m
+[32m+[m[32m            },[m
+[32m+[m[32m        )[m
+[32m+[m[32m        return updated[m
+[32m+[m
+[32m+[m[32m    @staticmethod[m
+[32m+[m[32m    def _validate_status_transition([m
+[32m+[m[32m        order: Order, new_status: OrderStatus[m
+[32m+[m[32m    ) -> None:[m
+[32m+[m[32m        if ([m
+[32m+[m[32m            order.status in {OrderStatus.SHIPPED, OrderStatus.COMPLETED}[m
+[32m+[m[32m            and new_status == OrderStatus.CANCELLED[m
+[32m+[m[32m        ):[m
+[32m+[m[32m            raise ConflictError([m
+[32m+[m[32m                f"Order cannot be cancelled after it has been {order.status.value}"[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        if new_status not in _ALLOWED_TRANSITIONS[order.status]:[m
+[32m+[m[32m            raise ConflictError([m
+[32m+[m[32m                f"Order cannot move from {order.status.value} to {new_status.value}"[m
+[32m+[m[32m            )[m
+[1mdiff --git a/migrations/initial_schema.sql b/migrations/initial_schema.sql[m
+[1mindex 6f1ef69..f1e4dc1 100644[m
+[1m--- a/migrations/initial_schema.sql[m
+[1m+++ b/migrations/initial_schema.sql[m
+[36m@@ -25,5 +25,16 @@[m [mCREATE TABLE IF NOT EXISTS order_items ([m
+     unit_price TEXT NOT NULL CHECK (CAST(unit_price AS REAL) > 0)[m
+ );[m
+ [m
+[32m+[m[32mCREATE TABLE IF NOT EXISTS order_status_history ([m
+[32m+[m[32m    id INTEGER PRIMARY KEY AUTOINCREMENT,[m
+[32m+[m[32m    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,[m
+[32m+[m[32m    previous_status TEXT,[m
+[32m+[m[32m    new_status TEXT NOT NULL,[m
+[32m+[m[32m    changed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'))[m
+[32m+[m[32m);[m
+[32m+[m
+[32m+[m[32mCREATE INDEX IF NOT EXISTS idx_order_status_history_order_id[m
+[32m+[m[32mON order_status_history(order_id);[m
+[32m+[m
+ CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);[m
+[31m-CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);[m
+[32m+[m[32mCREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);[m
+\ No newline at end of file[m
+[1mdiff --git a/tests/test_orders.py b/tests/test_orders.py[m
+[1mindex 7ab21f1..4aea380 100644[m
+[1m--- a/tests/test_orders.py[m
+[1m+++ b/tests/test_orders.py[m
+[36m@@ -93,3 +93,135 @@[m [mdef test_admin_can_advance_order_status(client: TestClient) -> None:[m
+ [m
+     assert response.status_code == 200[m
+     assert response.json()["status"] == "paid"[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _create_admin_token(client: TestClient) -> str:[m
+[32m+[m[32m    context = client.app.state.context[m
+[32m+[m[32m    admin = context.users.register([m
+[32m+[m[32m        "admin@example.com",[m
+[32m+[m[32m        "admin-password-123",[m
+[32m+[m[32m        "Sample Administrator",[m
+[32m+[m[32m        role=UserRole.ADMIN,[m
+[32m+[m[32m    )[m
+[32m+[m[32m    return context.sessions.create(admin.id)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _create_order(client: TestClient, token: str) -> int:[m
+[32m+[m[32m    response = client.post([m
+[32m+[m[32m        "/orders",[m
+[32m+[m[32m        headers={"Authorization": f"Bearer {token}"},[m
+[32m+[m[32m        json={"items": [{"sku": "ITEM-1", "quantity": 1, "unit_price": "3.25"}]},[m
+[32m+[m[32m    )[m
+[32m+[m[32m    assert response.status_code == 201[m
+[32m+[m[32m    return response.json()["id"][m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_admin_can_bulk_update_order_statuses(client: TestClient) -> None:[m
+[32m+[m[32m    _, customer_token = register_and_login(client)[m
+[32m+[m[32m    admin_token = _create_admin_token(client)[m
+[32m+[m[32m    order_ids = [[m
+[32m+[m[32m        _create_order(client, customer_token),[m
+[32m+[m[32m        _create_order(client, customer_token),[m
+[32m+[m[32m    ][m
+[32m+[m
+[32m+[m[32m    response = client.patch([m
+[32m+[m[32m        "/admin/orders/status",[m
+[32m+[m[32m        headers={"Authorization": f"Bearer {admin_token}"},[m
+[32m+[m[32m        json={"order_ids": order_ids, "status": "paid"},[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    assert response.status_code == 200[m
+[32m+[m[32m    assert [order["id"] for order in response.json()] == order_ids[m
+[32m+[m[32m    assert [order["status"] for order in response.json()] == ["paid", "paid"][m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_customer_cannot_bulk_update_order_statuses(client: TestClient) -> None:[m
+[32m+[m[32m    _, token = register_and_login(client)[m
+[32m+[m[32m    order_id = _create_order(client, token)[m
+[32m+[m
+[32m+[m[32m    response = client.patch([m
+[32m+[m[32m        "/admin/orders/status",[m
+[32m+[m[32m        headers={"Authorization": f"Bearer {token}"},[m
+[32m+[m[32m        json={"order_ids": [order_id], "status": "paid"},[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    assert response.status_code == 403[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_bulk_update_rejects_missing_order_without_updating_existing_orders([m
+[32m+[m[32m    client: TestClient,[m
+[32m+[m[32m) -> None:[m
+[32m+[m[32m    _, customer_token = register_and_login(client)[m
+[32m+[m[32m    admin_token = _create_admin_token(client)[m
+[32m+[m[32m    order_id = _create_order(client, customer_token)[m
+[32m+[m
+[32m+[m[32m    response = client.patch([m
+[32m+[m[32m        "/admin/orders/status",[m
+[32m+[m[32m        headers={"Authorization": f"Bearer {admin_token}"},[m
+[32m+[m[32m        json={"order_ids": [order_id, 9999], "status": "paid"},[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    assert response.status_code == 404[m
+[32m+[m[32m    assert ([m
+[32m+[m[32m        client.get([m
+[32m+[m[32m            f"/orders/{order_id}",[m
+[32m+[m[32m            headers={"Authorization": f"Bearer {customer_token}"},[m
+[32m+[m[32m        ).json()["status"][m
+[32m+[m[32m        == "pending"[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_bulk_update_rejects_invalid_transition_without_partial_updates([m
+[32m+[m[32m    client: TestClient,[m
+[32m+[m[32m) -> None:[m
+[32m+[m[32m    _, customer_token = register_and_login(client)[m
+[32m+[m[32m    admin_token = _create_admin_token(client)[m
+[32m+[m[32m    first_order_id = _create_order(client, customer_token)[m
+[32m+[m[32m    completed_order_id = _create_order(client, customer_token)[m
+[32m+[m[32m    admin_headers = {"Authorization": f"Bearer {admin_token}"}[m
+[32m+[m
+[32m+[m[32m    for status in ("paid", "shipped", "completed"):[m
+[32m+[m[32m        advanced = client.patch([m
+[32m+[m[32m            f"/orders/{completed_order_id}/status",[m
+[32m+[m[32m            headers=admin_headers,[m
+[32m+[m[32m            json={"status": status},[m
+[32m+[m[32m        )[m
+[32m+[m[32m        assert advanced.status_code == 200[m
+[32m+[m
+[32m+[m[32m    response = client.patch([m
+[32m+[m[32m        "/admin/orders/status",[m
+[32m+[m[32m        headers=admin_headers,[m
+[32m+[m[32m        json={[m
+[32m+[m[32m            "order_ids": [first_order_id, completed_order_id],[m
+[32m+[m[32m            "status": "paid",[m
+[32m+[m[32m        },[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    assert response.status_code == 409[m
+[32m+[m[32m    orders = client.get("/admin/orders", headers=admin_headers).json()[m
+[32m+[m[32m    statuses = {order["id"]: order["status"] for order in orders}[m
+[32m+[m[32m    assert statuses[first_order_id] == "pending"[m
+[32m+[m[32m    assert statuses[completed_order_id] == "completed"[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_bulk_update_requires_unique_nonempty_order_ids([m
+[32m+[m[32m    client: TestClient,[m
+[32m+[m[32m) -> None:[m
+[32m+[m[32m    _, customer_token = register_and_login(client)[m
+[32m+[m[32m    admin_token = _create_admin_token(client)[m
+[32m+[m[32m    order_id = _create_order(client, customer_token)[m
+[32m+[m[32m    headers = {"Authorization": f"Bearer {admin_token}"}[m
+[32m+[m
+[32m+[m[32m    empty_response = client.patch([m
+[32m+[m[32m        "/admin/orders/status",[m
+[32m+[m[32m        headers=headers,[m
+[32m+[m[32m        json={"order_ids": [], "status": "paid"},[m
+[32m+[m[32m    )[m
+[32m+[m[32m    duplicate_response = client.patch([m
+[32m+[m[32m        "/admin/orders/status",[m
+[32m+[m[32m        headers=headers,[m
+[32m+[m[32m        json={"order_ids": [order_id, order_id], "status": "paid"},[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    assert empty_response.status_code == 422[m
+[32m+[m[32m    assert duplicate_response.status_code == 422[m
