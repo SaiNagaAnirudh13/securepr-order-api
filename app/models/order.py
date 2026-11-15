@@ -28,3 +28,12 @@ class Order:
     items: tuple[OrderItem, ...]
     total: Decimal
     created_at: datetime
+
+
+@dataclass(frozen=True)
+class OrderStatusHistory:
+    id: int
+    order_id: int
+    previous_status: OrderStatus | None
+    new_status: OrderStatus
+    changed_at: datetime

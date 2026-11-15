@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.order import Order, OrderItem, OrderStatus
 
@@ -18,6 +18,18 @@ class OrderCreate(BaseModel):
 
 class OrderStatusUpdate(BaseModel):
     status: OrderStatus
+
+
+class OrderBulkStatusUpdate(BaseModel):
+    order_ids: list[int] = Field(min_length=1, max_length=50)
+    status: OrderStatus
+
+    @field_validator("order_ids")
+    @classmethod
+    def order_ids_must_be_unique(cls, order_ids: list[int]) -> list[int]:
+        if len(order_ids) != len(set(order_ids)):
+            raise ValueError("order_ids must not contain duplicates")
+        return order_ids
 
 
 class OrderItemResponse(BaseModel):
